@@ -1,65 +1,5 @@
 #include "linear.h"
 
-/* ----- Component Wise Operations ----- */
-
-namespace operations
-{
-	/*
-	 * AssignmentOp is an in-place operation (i.e. +=). This reduces the number of allocations
-	 * and copies when modifying vectors of Vectors.
-	 */
-
-	/*
-	 * Vector-Scalar operation
-	 */
-	template<class T, class V, class AssignmentOp>
-	void component_wise(std::vector<T>& target, V t, AssignmentOp op)
-	{
-		for (size_t i = 0; i < target.size(); i++)
-			op(target[i], t);
-	}
-
-	/*
-	 * Vector-Vector operation
-	 */
-	template<class T, class AssignmentOp>
-	void component_wise(std::vector<T>& target, const std::vector<T>& source, AssignmentOp op)
-	{
-		for (size_t i = 0; i < target.size(); i++)
-			op(target[i], source[i]);
-	}
-
-	/* ----- Operation-Assignment Function Classes ----- */
-
-	template<class T>
-	class plus_equals
-	{
-	public:
-		constexpr void operator()(T& a, const T& b) const { a += b;};
-	};
-
-	template<class T>
-	class minus_equals
-	{
-	public:
-		constexpr void operator()(T& a, const T& b) const { a -= b;};
-	};
-
-	template<class T, class V>
-	class times_equals
-	{
-	public:
-		constexpr void operator()(T& a, const V& b) const { a *= b;};
-	};
-
-	template<class T, class V>
-	class divides_equals
-	{
-	public:
-		constexpr void operator()(T& a, const V& b) const { a /= b;};
-	};
-}
-
 /* ----- Printing Functions ----- */
 
 void print_vec(const Vector& v)
@@ -109,27 +49,27 @@ double& Vector::operator[](size_t i)
 }
 
 Vector& Vector::operator+=(const Vector& v) {
-	operations::component_wise(data, v.data, operations::plus_equals<double>());
+	component_wise(v, operations::plus_equals<double>());
 	return *this;
 }
 
 Vector& Vector::operator-=(const Vector& v) {
-	operations::component_wise(data, v.data, operations::minus_equals<double>());
+	component_wise(v, operations::minus_equals<double>());
 	return *this;
 }
 
 Vector& Vector::operator*=(const Vector& v) {
-	operations::component_wise(data, v.data, operations::times_equals<double, double>());
+	component_wise(v, operations::times_equals<double, double>());
 	return *this;
 }
 
 Vector& Vector::operator*=(double t) {
-	operations::component_wise(data, t, operations::times_equals<double, double>());
+	component_wise(t, operations::times_equals<double, double>());
 	return *this;
 }
 
 Vector& Vector::operator/=(double t) {
-	operations::component_wise(data, t, operations::divides_equals<double, double>());
+	component_wise(t, operations::divides_equals<double, double>());
 	return *this;
 }
 
@@ -175,18 +115,18 @@ double& Matrix::operator()(size_t i, size_t j)
 
 Matrix& Matrix::operator+=(const Matrix& matrix)
 {
-	operations::component_wise(data, matrix.data, operations::plus_equals<Vector>());
+	component_wise(matrix, operations::plus_equals<Vector>());
 	return *this;
 }
 
 Matrix& Matrix::operator-=(const Matrix& matrix)
 {
-	operations::component_wise(data, matrix.data, operations::minus_equals<Vector>());
+	component_wise(matrix, operations::minus_equals<Vector>());
 	return *this;
 }
 
 Matrix& Matrix::operator*=(double t) {
-	operations::component_wise(data, t, operations::times_equals<Vector, double>());
+	component_wise(t, operations::times_equals<Vector, double>());
 	return *this;
 }
 
@@ -227,11 +167,10 @@ Vector operator*(const Matrix& m, const Vector& v)
 
 	std::transform(m.data.begin(), m.data.end(), out.data.begin(),
 		[v] (const Vector& a) -> double {
-			return std::inner_product(a.data.begin(), a.data.end(), v.data.begin(), 0.0,
-				std::plus<double>(), std::multiplies<double>());
+			return dot(a,v);
 		}
 	);
-	
+
 	return out;
 }
 
@@ -258,3 +197,7 @@ Vector operator*(double a, const Vector& v)
 	return out;
 }
 
+double dot(const Vector& a, const Vector& b)
+{
+	return std::inner_product(a.data.begin(), a.data.end(), b.data.begin(), 0.0);
+}

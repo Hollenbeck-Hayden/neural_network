@@ -39,7 +39,7 @@ namespace lossers
 		 * Determine the loss of the data points (outputs) versus the neural network predictions
 		 * (results).
 		 */
-		virtual double loss(const std::vector<Vector>& outputs, const std::vector<Vector>& results) = 0;
+		virtual double loss(const Dataset& outputs, const Dataset& results) = 0;
 
 		/*
 		 * Derivative of the loss function.
@@ -79,7 +79,7 @@ namespace lossers
 	public:
 		MeanSquaredError();
 
-		virtual double loss(const std::vector<Vector>& outputs, const std::vector<Vector>& results);
+		virtual double loss(const Dataset& outputs, const Dataset& results);
 		virtual Vector loss_derivative(const Vector& outputs, const Vector& results);
 	};
 }
@@ -308,20 +308,15 @@ namespace optimizers
 	private:
 		double alpha;		// Learning rate
 		double beta_1, beta_2;	// Forgetful factors
-
-		/*
-		 * Clear running averages.
-		 */
-		void clear_mv_vectors();
+		double t;		// Timestep
 
 		/*
 		 * Calculate moments for
 		 * 	g - gradient
 		 * 	m - first moment
 		 * 	v - second moment
-		 * 	t - iteration step
 		 */
-		double moment_calc(double g, double& m, double& v, double t);
+		double moment_calc(double g, double& m, double& v);
 
 		/*
 		 * First moment running averages
@@ -363,9 +358,14 @@ public:
 	Layer& operator=(const Layer& layer);
 
 	/*
+	 * Set layer's nodes to the input vector.
+	 */
+	Layer& operator=(const Vector& v);
+
+	/*
 	 * Computes the outputs of the layer from the nodes values.
 	 */
-	Vector compute();
+	Vector compute() const;
 
 	/*
 	 * Print the vector.
@@ -452,7 +452,7 @@ public:
 	/*
 	 * Calculate the loss of the neural network.
 	 */
-	double loss(const std::vector<Vector>& outputs, const std::vector<Vector>& results);
+	double loss(const Dataset& outputs, const Dataset& results);
 
 	/*
 	 * Returns a schematic of the layout of the neural network.

@@ -1,4 +1,8 @@
 #include "neural_network.h"
+#include "operations.h"
+
+#include <algorithm>
+#include <numeric>
 
 namespace lossers
 {
@@ -19,13 +23,14 @@ namespace lossers
 		: Losser(Method::MSE)
 	{}
 
-	double MeanSquaredError::loss(const std::vector<Vector>& outputs, const std::vector<Vector>& results)
+	double MeanSquaredError::loss(const Dataset& outputs, const Dataset& results)
 	{
-		double total = 0;
-		for (size_t i = 0; i < outputs.size(); i++)
-			for (size_t j = 0; j < outputs[i].length(); j++)
-				total += (outputs[i][j] - results[i][j]) * (outputs[i][j] - results[i][j]);
-		return 0.5 * total;
+		return 0.5 * std::transform_reduce(outputs.begin(), outputs.end(), results.begin(), 0.0,
+				std::plus<double>(),
+				[] (const auto& a, const auto& b) -> double {
+					const Vector c = a.y - b.y;
+					return dot(c,c);
+				});
 	}
 
 	Vector MeanSquaredError::loss_derivative(const Vector& outputs, const Vector& results)
@@ -164,6 +169,7 @@ namespace optimizers
 	Optimizer::Optimizer(const std::vector<size_t>& layout, Method m)
 		: method(m)
 	{
+		// Initialize corresponding difference and gradient vectors for each layer
 		d_weights.reserve(layout.size()-1);
 		weights_g.reserve(d_weights.size());
 
@@ -205,39 +211,48 @@ namespace optimizers
 
 	void Optimizer::apply_changes(NeuralNetwork& network)
 	{
-		for (size_t l = 0; l < network.layers.size(); l++)
-		{
-			network.layers[l].thresholds += d_thresholds[l];
-			network.layers[l].weights += d_weights[l];
-		}
+		operations::modify(network.layers.begin(), network.layers.end(), d_thresholds.begin(), [] (Layer& layer, const Vector& threshold) -> void { layer.thresholds += threshold; });
+		operations::modify(network.layers.begin(), network.layers.end(),    d_weights.begin(), [] (Layer& layer, const Matrix&    weight) -> void { layer.weights    +=    weight; });
 	}
 
 	void Optimizer::calculate_gradient(NeuralNetwork& network, const Dataset& dataset)
 	{
 		// Clear previous gradient entries
-		for (size_t l = 0; l < weights_g.size(); l++)
-		{
-			weights_g[l].clear();
-			thresholds_g[l].clear();
-		}
+		std::for_each(   weights_g.begin(),    weights_g.end(), [] (Matrix& m) -> void { m.clear(); });
+		std::for_each(thresholds_g.begin(), thresholds_g.end(), [] (Vector& v) -> void { v.clear(); });
 
 		// Calculate gradient over sum of data points
-		for (size_t a = 0; a < dataset.size(); a++)
+		for (const auto& data_point : dataset)
 		{
-			Vector results = network.compute(dataset.x[a]);
-			Vector Delta = network.losser->loss_derivative(dataset.y[a], results);
+			Vector results = network.compute(data_point.x);
+			Vector Delta = network.losser->loss_derivative(data_point.y, results);
 			
-			for (int index = network.layers.size()-1; index >= 0; index--)
+			// Back-propagate through the layers
+			auto layer	 = network.layers.rbegin();
+			auto weight_g	 = weights_g.rbegin();
+			auto threshold_g = thresholds_g.rbegin();
+
+			while(layer != network.layers.rend())
 			{
-				Delta *= network.layers[index].activator->activation_derivative(network.layers[index].h());
+				// Multiply Delta components by activation derivatives at each node
+				Delta *= layer->activator->activation_derivative(layer->h());
 
-				for (size_t i = 0; i < weights_g[index].num_rows(); i++)
-					for (size_t j = 0; j < weights_g[index].num_cols(); j++)
-						weights_g[index](i,j) += Delta[i] * network.layers[index].nodes[j];
+				// Add tensor product of Delta and layer's nodes to the gradient
+				for (size_t i = 0; i < weight_g->num_rows(); i++)
+					for (size_t j = 0; j < weight_g->num_cols(); j++)
+						(*weight_g)(i,j) += Delta[i] * layer->nodes[j];
 
-				thresholds_g[index] += Delta;
+				// Add Delta to threshold gradient
+				(*threshold_g) += Delta;
 
-				Delta = Delta * network.layers[index].weights;
+				// Prep delta for next layer
+				// May change Delta's size depending on weight dimensions
+				Delta = Delta * layer->weights;
+
+				// Increment iterators
+				layer++;
+				weight_g++;
+				threshold_g++;
 			}
 		}
 	}
@@ -257,22 +272,16 @@ namespace optimizers
 
 		calculate_gradient(network, dataset);
 
-		for (size_t l = 0; l < weights_g.size(); l++)
-			d_weights[l] -= eta * weights_g[l];
-
-		for (size_t l = 0; l < thresholds_g.size(); l++)
-			d_thresholds[l] -= eta * thresholds_g[l];
+		operations::modify(   d_weights.begin(),    d_weights.end(),    weights_g.begin(), [eta = this->eta] (Matrix& a, const Matrix& b) -> void { a -= eta * b; });
+		operations::modify(d_thresholds.begin(), d_thresholds.end(), thresholds_g.begin(), [eta = this->eta] (Vector& a, const Vector& b) -> void { a -= eta * b; });
 
 		apply_changes(network);
 	}
 
 	void StochasticGradientDescent::apply_momentum()
 	{
-		for (size_t i = 0; i < d_weights.size(); i++)
-		{
-			d_weights[i] *= alpha;
-			d_thresholds[i] *= alpha;
-		}
+		operations::modify(   d_weights.begin(),    d_weights.end(), [alpha = this->alpha] (Matrix& a) -> void { a *= alpha; });
+		operations::modify(d_thresholds.begin(), d_thresholds.end(), [alpha = this->alpha] (Vector& a) -> void { a *= alpha; });
 	}
 
 	std::vector<double> StochasticGradientDescent::get_parameters() const
@@ -283,67 +292,47 @@ namespace optimizers
 	/* ----- Adam ----- */
 
 	Adam::Adam(const std::vector<size_t>& layout, const std::vector<double>& parameters)
-		: Optimizer(layout, Method::ADAM)
+		: Optimizer(layout, Method::ADAM),
+			   weights_m(   d_weights.size()),    weights_v(   d_weights.size()),
+			thresholds_m(d_thresholds.size()), thresholds_v(d_thresholds.size())
 	{
+		// Unpack parameters
 		alpha = parameters[0];
 		beta_1 = parameters[1];
 		beta_2 = parameters[2];
+		t = 0;
 
-		weights_m.reserve(d_weights.size());
-		weights_v.reserve(d_weights.size());
-		for (size_t i = 0; i < d_weights.size(); i++)
-		{
-			weights_m.push_back(Matrix(d_weights[i].num_rows(), d_weights[i].num_cols()));
-			weights_v.push_back(Matrix(d_weights[i].num_rows(), d_weights[i].num_cols()));
-		}
+		// Initialize first and second moment collections
+		operations::modify(weights_m.begin(), weights_m.end(), d_weights.begin(), [] (Matrix& m, const Matrix& d) -> void { m = Matrix(d.num_rows(), d.num_cols()); });
+		operations::modify(weights_v.begin(), weights_v.end(), d_weights.begin(), [] (Matrix& m, const Matrix& d) -> void { m = Matrix(d.num_rows(), d.num_cols()); });
 
-		thresholds_m.reserve(d_thresholds.size());
-		thresholds_v.reserve(d_thresholds.size());
-		for (size_t i = 0; i < d_thresholds.size(); i++)
-		{
-			thresholds_m.push_back(Vector(d_thresholds[i].length()));
-			thresholds_v.push_back(Vector(d_thresholds[i].length()));
-		}
+		operations::modify(thresholds_m.begin(), thresholds_m.end(), d_thresholds.begin(), [] (Vector& v, const Vector& d) -> void { v = Vector(d.length()); });
+		operations::modify(thresholds_v.begin(), thresholds_v.end(), d_thresholds.begin(), [] (Vector& v, const Vector& d) -> void { v = Vector(d.length()); });
 	}
 
 	void Adam::optimize(NeuralNetwork& network, const Dataset& dataset)
 	{
-		clear_mv_vectors();
+		// Increment time step
+		t += 1.0;
 
-		for (int t = 1; t < 60; t++)
-		{
-			calculate_gradient(network, dataset);
+		// Calculate gradient
+		calculate_gradient(network, dataset);
 
-			for (size_t l = 0; l < d_weights.size(); l++)
-				for (size_t i = 0; i < d_weights[l].num_rows(); i++)
-					for (size_t j = 0; j < d_weights[l].num_cols(); j++)
-						d_weights[l](i,j) = moment_calc(weights_g[l](i,j), weights_m[l](i,j), weights_v[l](i,j), (double) t);
-			
-			for (size_t l = 0; l < d_thresholds.size(); l++)
-				for (size_t i = 0; i < d_thresholds[l].length(); i++)
-					d_thresholds[l][i] = moment_calc(thresholds_g[l][i], thresholds_m[l][i], thresholds_v[l][i], (double) t);
+		// Perform moment calculations
+		for (size_t l = 0; l < d_weights.size(); l++)
+			for (size_t i = 0; i < d_weights[l].num_rows(); i++)
+				for (size_t j = 0; j < d_weights[l].num_cols(); j++)
+					d_weights[l](i,j) = moment_calc(weights_g[l](i,j), weights_m[l](i,j), weights_v[l](i,j));
 
-			apply_changes(network);
-		}
+		for (size_t l = 0; l < d_thresholds.size(); l++)
+			for (size_t i = 0; i < d_thresholds[l].length(); i++)
+				d_thresholds[l][i] = moment_calc(thresholds_g[l][i], thresholds_m[l][i], thresholds_v[l][i]);
+
+		// Apply changes
+		apply_changes(network);
 	}
 
-	void Adam::clear_mv_vectors()
-	{
-		for (size_t i = 0; i < d_weights.size(); i++)
-		{
-			weights_m[i].clear();
-			weights_v[i].clear();
-		}
-		
-		for (size_t i = 0; i < d_thresholds.size(); i++)
-		{
-			thresholds_m[i].clear();
-			thresholds_v[i].clear();
-		}
-	}
-
-
-	double Adam::moment_calc(double g, double& m, double& v, double t)
+	double Adam::moment_calc(double g, double& m, double& v)
 	{
 		const double epsilon = 1e-6;
 
@@ -380,14 +369,16 @@ namespace optimizers
 	
 	std::unique_ptr<Optimizer> read_from_file(std::ifstream& infile, std::vector<size_t> layout)
 	{
+		// Read in method
 		int method;
 		infile >> method;
+
+		// Read in parameters
 		int num_params;
 		infile >> num_params;
-
 		std::vector<double> params(num_params);
-		for (int i = 0; i < num_params; i++)
-			infile >> params[i];
+		for (double& p : params)
+			infile >> p;
 
 		return make_optimizer((Method) method, layout, params);
 	}
@@ -413,7 +404,7 @@ Layer& Layer::operator=(const Layer& layer)
 	return *this;
 }
 
-Vector Layer::compute()
+Vector Layer::compute() const
 {
 	return activator->activation(h());
 }
@@ -421,6 +412,12 @@ Vector Layer::compute()
 Vector Layer::h() const
 {
 	return weights * nodes + thresholds;
+}
+
+Layer& Layer::operator=(const Vector& v)
+{
+	nodes = v;
+	return *this;
 }
 
 void Layer::print() const
@@ -443,9 +440,10 @@ void Layer::randomize_weights(Randomizer& r)
 
 void Layer::write_to_file(std::ofstream& outfile)
 {
+	// Write layer parameters
 	activator->write_to_file(outfile);
-
 	outfile << weights.num_rows() << " " << weights.num_cols() << std::endl;
+
 	for (size_t i = 0; i < weights.num_rows(); i++)
 	{
 		for (size_t j = 0; j < weights.num_cols(); j++)
@@ -461,12 +459,14 @@ void Layer::write_to_file(std::ofstream& outfile)
 
 Layer Layer::read_from_file(std::ifstream& infile)
 {
+	// Construct empty layer
 	auto activator = activators::read_from_file(infile);
 	size_t input_size, output_size;
 	infile >> output_size >> input_size;
 
 	Layer layer(input_size, output_size, std::move(activator));
 
+	// Read in components
 	for (size_t i = 0; i < layer.weights.num_rows(); i++)
 		for (size_t j = 0; j < layer.weights.num_cols(); j++)
 			infile >> layer.weights(i,j);
@@ -500,11 +500,11 @@ NeuralNetwork::NeuralNetwork(std::vector<size_t> layout, std::vector<activators:
 
 Vector NeuralNetwork::compute(const Vector& inputs)
 {
-	layers.front().nodes = inputs;
+	layers.front() = inputs;
 
-	for (size_t i = 1; i < layers.size(); i++) {
-		layers[i].nodes = layers[i-1].compute();
-	}
+	// Feed output of each layer into the next
+	operations::modify(layers.begin()+1, layers.end(), layers.begin(),
+		[] (Layer& layer, const Layer& prev) -> void { layer = prev.compute(); });
 
 	return layers.back().compute();
 }
@@ -526,61 +526,57 @@ void NeuralNetwork::print() const
 void NeuralNetwork::randomize_weights()
 {
 	Randomizer r(0.001, 0.01);
-	for (size_t i = 0; i < layers.size(); i++)
-		layers[i].randomize_weights(r);
+	for (Layer& layer : layers)
+		layer.randomize_weights(r);
 }
 
-double NeuralNetwork::loss(const std::vector<Vector>& outputs, const std::vector<Vector>& results)
+double NeuralNetwork::loss(const Dataset& outputs, const Dataset& results)
 {
 	return losser->loss(outputs, results);
 }
 
 void NeuralNetwork::write_to_file(const std::string& filename)
 {
+	// Open file
 	std::ofstream outfile(filename);
 
+	// Have each component write itself
 	outfile << layers.size() << std::endl;
-	for (size_t i = 0; i < layers.size(); i++)
-	{
-		layers[i].write_to_file(outfile);
-	}
+	for (Layer& layer : layers)
+		layer.write_to_file(outfile);
 
 	losser->write_to_file(outfile);
 	optimizer->write_to_file(outfile);
 
+	// Close file
 	outfile.close();
 }
 
 void NeuralNetwork::read_from_file(const std::string& filename)
 {
+	// Open file
 	std::ifstream infile(filename);
 
+	// Have each component read itself in
 	int layer_count;
 	infile >> layer_count;
 
 	layers = std::vector<Layer>();
 	layers.reserve(layer_count);
-
 	for (size_t i = 0; i < layer_count; i++)
-	{
 		layers.push_back(Layer::read_from_file(infile));
-	}
-
-	std::vector<size_t> layout(layer_count+1);
-	for (size_t i = 0; i < layers.size(); i++)
-		layout[i] = layers[i].nodes.length();
-
-	layout.back() = layers.back().weights.num_rows();
 
 	losser = lossers::read_from_file(infile);
-	optimizer = optimizers::read_from_file(infile, layout);
+	optimizer = optimizers::read_from_file(infile, get_layout());
 
+	// Close file
 	infile.close();
 }
 
 NeuralNetwork::NeuralNetwork(const NeuralNetwork& network)
 	: layers(network.layers)
 {
+	// Make pointers that can't be copied
 	optimizer = optimizers::make_optimizer(network.optimizer->method, network.get_layout(), network.optimizer->get_parameters());
 	losser = lossers::make_losser(network.losser->method);
 }
@@ -588,6 +584,8 @@ NeuralNetwork::NeuralNetwork(const NeuralNetwork& network)
 NeuralNetwork& NeuralNetwork::operator=(const NeuralNetwork& network)
 {
 	layers = network.layers;
+
+	// Make pointers that can't be copied
 	optimizer = optimizers::make_optimizer(network.optimizer->method, network.get_layout(), network.optimizer->get_parameters());
 	losser = lossers::make_losser(network.losser->method);
 	return *this;
@@ -596,8 +594,7 @@ NeuralNetwork& NeuralNetwork::operator=(const NeuralNetwork& network)
 std::vector<size_t> NeuralNetwork::get_layout() const
 {
 	std::vector<size_t> layout(layers.size()+1);
-	for (size_t i = 0; i < layers.size(); i++)
-		layout[i] = layers[i].nodes.length();
+	operations::modify(layout.begin(), layout.end(), layers.begin(), [] (size_t& a, const Layer& b) { a = b.nodes.length(); });
 	layout.back() = layers.back().weights.num_rows();
 	return layout;
 }

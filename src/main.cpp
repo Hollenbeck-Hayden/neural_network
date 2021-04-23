@@ -21,7 +21,7 @@ static const double PRED_STEP = 0.1;
 Vector target_function(const Vector& x)
 {
 	Vector v(1);
-	v[0] = -3.0 + x[0] * x[0];
+	v[0] = -3.0 + x[0];
 	return v;
 }
 
@@ -30,17 +30,13 @@ Vector target_function(const Vector& x)
  */
 Dataset generate_data()
 {
-	Dataset data;
-	data.x = generate_range(X_LOW, X_HIGH, DATA_STEP);
-	data.y = std::vector<Vector>(data.x.size());
-
 	Randomizer rand(-1, 1);
-
-	for (size_t i = 0; i < data.x.size(); i++)
-	{
-		data.y[i] = target_function(data.x[i]);
-		data.y[i][0] += rand.next();
-	}
+	Dataset data = generate_range(X_LOW, X_HIGH, DATA_STEP);
+	operations::modify(data.begin(), data.end(),
+		[r = &rand] (Point<Vector>& p) -> void {
+			p.y = target_function(p.x);
+			p.y[0] += r->next();
+		});
 
 	return data;
 }
@@ -48,24 +44,24 @@ Dataset generate_data()
 /*
  * Generates results of the neural network for a given input set.
  */
-Dataset generate_results(NeuralNetwork& nn, const std::vector<Vector>& inputs)
+Dataset generate_results(NeuralNetwork& nn, const Dataset& inputs)
 {
-	Dataset data;
-	data.x = inputs;
-	data.y = std::vector<Vector>(data.x.size());
+	Dataset data(inputs.size());
+	operations::modify(data.begin(), data.end(), inputs.begin(),
+		[n = &nn] (Point<Vector>& p, const Point<Vector>& q) -> void {
+			p.x = q.x;
+			p.y = n->compute(p.x);
+		});
 
-	for (size_t i = 0; i < data.x.size(); i++)
-		data.y[i] = nn.compute(data.x[i]);
-	
 	return data;
 }
 
 /*
  * Generates predictions interpolated by the neural network.
  */
-Dataset generate_predictions(NeuralNetwork& nn)
+Dataset generate_predictions()
 {
-	return generate_results(nn, generate_range(X_LOW, X_HIGH, PRED_STEP));
+	return generate_range(X_LOW, X_HIGH, PRED_STEP);
 }
 
 /*
@@ -75,13 +71,13 @@ void write_to_file(const std::string& filename, const Dataset& data, const Datas
 {
 	std::ofstream out(filename);
 
-	out << data.x.size() << std::endl;
-	for (int i = 0; i < data.x.size(); i++)
-		out << data.x[i][0] << ", " << data.y[i][0] << std::endl;
+	out << data.size() << std::endl;
+	for (const auto& p : data)
+		out << p.x[0] << ", " << p.y[0] << std::endl;
 	
-	out << predictions.x.size() << std::endl;
-	for (int i = 0; i < predictions.x.size(); i++)
-		out << predictions.x[i][0] << ", " << predictions.y[i][0] << std::endl;
+	out << predictions.size() << std::endl;
+	for (const auto& p : predictions)
+		out << p.x[0] << ", " << p.y[0] << std::endl;
 
 	out.close();
 }
@@ -119,33 +115,43 @@ void cross_validation(NeuralNetwork& network, const Dataset& data, size_t k, siz
 	std::cout << "Training " << i << "th neural network on " << k << "-fold dataset" << std::endl;
 	size_t subset_size = data.size() / k;
 
-	const size_t MAX_EPOCHS = 100;
-	const size_t EPOCH_SIZE = 20;
+	const size_t MAX_EPOCHS = 200; // Number of epochs to run
+	const size_t EPOCH_SIZE = 500; // Number of iterations to run in an epoch (reduces number of validation checks)
 
+	// Get training & validation sets
 	const Dataset training   = data.get_training_set  (i, subset_size);
 	const Dataset validation = data.get_validation_set(i, subset_size);
 
+	// Store errors for visualization
 	std::vector<double>   training_error(MAX_EPOCHS);
 	std::vector<double> validation_error(MAX_EPOCHS);
 
-	std::vector<NeuralNetwork> networks;
-	networks.reserve(MAX_EPOCHS);
+	// Network that has best validation error
+	NeuralNetwork best_network = (const NeuralNetwork&) network;
+	double best_error = best_network.loss(validation, generate_results(network, validation));
 
+	// Iterate over all epochs
 	for (size_t epoch = 0; epoch < MAX_EPOCHS; epoch++)
 	{
+		// Train the network
 		train_network_epoch(network, training, EPOCH_SIZE);
-		  training_error[epoch] = network.loss(  training.y, generate_results(network,   training.x).y);
-		validation_error[epoch] = network.loss(validation.y, generate_results(network, validation.x).y);
-		networks.push_back((const NeuralNetwork&) network);
+
+		// Record errors
+		  training_error[epoch] = network.loss(  training, generate_results(network,   training));
+		validation_error[epoch] = network.loss(validation, generate_results(network, validation));
+
+		// Check if this is the best network
+		if (validation_error[epoch] < best_error)
+		{
+			best_network = (const NeuralNetwork&) network;
+			best_error = validation_error[epoch];
+		}
 	}
 
-	size_t mindex = 0;
-	for (size_t i = 0; i < validation_error.size(); i++)
-		if (validation_error[i] < validation_error[mindex])
-			mindex = i;
-	
-	network = std::move(networks[mindex]);
+	// Set network as the best one
+	network = std::move(best_network);
 
+	// Save to file
 	write_xvalidation_to_file(i, training_error, validation_error);
 }
 
@@ -165,45 +171,43 @@ int main(void)
 	//const Dataset data = Dataset::read_from_file("../data/test.data");
 
 	/* ----- Cross Validation ----- */
-	const size_t k = 5;			// k-fold cross validation
+	const size_t k = 4;			// k-fold cross validation
 	std::vector<NeuralNetwork> networks;
 
+	// Randomize data order to get distributed folds
 	const Dataset rand_ordered_data = randomize_dataset_order(data);
 	rand_ordered_data.write_to_file("../data/test_rand.data");
 
 	for (size_t i = 0; i < k; i++)
 	{
+		// Build a network for ith fold
 		std::unique_ptr<optimizers::Optimizer> optimizer = optimizers::make_optimizer(optimizer_method, layout, optimizer_parameters);
 		NeuralNetwork network(layout, activations, lossers::Method::MSE, std::move(optimizer));
 		network.randomize_weights();
 
+		// Perform cross validation
 		cross_validation(network, rand_ordered_data, k, i);
 
+		// Save network
 		networks.push_back(std::move(network));
 	}
 
 	/* ----- Output results of the neural network ----- */
 
-	Dataset dummy_preds = generate_predictions(networks.front());
-	Dataset avg(dummy_preds.size());
-	for (size_t i = 0; i < avg.size(); i++)
-	{
-		avg.x[i] = dummy_preds.x[i];
-		avg.y[i] = Vector(dummy_preds.y[i]);
-		avg.y[i].clear();
-	}
+	Dataset avg = generate_predictions();
+	operations::modify(avg.begin(), avg.end(),
+		[n = layout.back()] (Point<Vector>& p) -> void {
+			p.y = Vector(n);
+		});
 
 	for (size_t i = 0; i < k; i++)
 	{
 		std::stringstream sstream;
 		sstream << "../data/results_" << i << ".data";
-		const Dataset preds = generate_predictions(networks[i]);
+		const Dataset preds = generate_results(networks[i], generate_predictions());
 		write_to_file(sstream.str(), data, preds);
 
-		for (size_t j = 0; j < avg.size(); j++)
-		{
-			avg.y[j] += preds.y[j] / ((double) k);
-		}
+		operations::modify(avg.begin(), avg.end(), preds.begin(), [n = (double) k] (Point<Vector>& a, const auto& b) -> void { a.y += b.y / k; });
 	}
 
 	write_to_file("../data/results_average.data", data, avg);

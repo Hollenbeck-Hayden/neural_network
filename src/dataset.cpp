@@ -2,7 +2,8 @@
 
 #include <iostream>
 #include <fstream>
-#include "randomizer.h"
+#include <algorithm>
+#include <random>
 
 /* ----- Dataset ----- */
 
@@ -10,38 +11,24 @@ Dataset::Dataset()
 {}
 
 Dataset::Dataset(size_t a)
-	: x(a), y(a)
+	: data(a)
 {}
-
-void Dataset::print() const
-{
-	std::cout << "x:\n";
-	for (size_t i = 0; i < x.size(); i++)
-		print_vec(x[i]);
-
-	std::cout << "y: ";
-	for (size_t j = 0; j < y.size(); j++)
-		print_vec(y[j]);
-}
 
 void Dataset::write_to_file(const std::string& filename) const
 {
 	std::ofstream outfile(filename);
 
 	outfile << size() << std::endl;
-	for (size_t i = 0; i < x.size(); i++)
+	for (const point_type& p : data)
 	{
-		outfile << x[i].length();
-		for (size_t j = 0; j < x[i].length(); j++)
-			outfile << " " << x[i][j];
-		outfile << std::endl;
-	}
+		outfile << p.x.length();
+		for (size_t i = 0; i < p.x.length(); i++)
+			outfile << " " << p.x[i];
 
-	for (size_t i = 0; i < y.size(); i++)
-	{
-		outfile << y[i].length();
-		for (size_t j = 0; j < y[i].length(); j++)
-			outfile << " " << y[i][j];
+		outfile << p.y.length();
+		for (size_t i = 0; i < p.y.length(); i++)
+			outfile << " " << p.y[i];
+
 		outfile << std::endl;
 	}
 }
@@ -55,22 +42,19 @@ Dataset Dataset::read_from_file(const std::string& filename)
 
 	Dataset dataset(datasize);
 
-	for (size_t i = 0; i < dataset.x.size(); i++)
+	for (point_type& p : dataset)
 	{
 		size_t s;
-		infile >> s;
-		dataset.x[i] = Vector(s);
-		for (size_t j = 0; j < dataset.x[i].length(); j++)
-			infile >> dataset.x[i][j];
-	}
 
-	for (size_t i = 0; i < dataset.y.size(); i++)
-	{
-		size_t s;
 		infile >> s;
-		dataset.y[i] = Vector(s);
-		for (size_t j = 0; j < dataset.y[i].length(); j++)
-			infile >> dataset.y[i][j];
+		p.x = Vector(s);
+		for (size_t j = 0; j < s; j++)
+			infile >> p.x[j];
+
+		infile >> s;
+		p.y = Vector(s);
+		for (size_t j = 0; j < s; j++)
+			infile >> p.y[j];
 	}
 
 	infile.close();
@@ -83,16 +67,10 @@ Dataset Dataset::get_training_set(size_t index, size_t k) const
 	Dataset training(size()-k);
 	
 	for (size_t i = 0; i < index; i++)
-	{
-		training.x[i] = x[i];
-		training.y[i] = y[i];
-	}
+		training.data[i] = data[i];
 
 	for (size_t i = index + k; i < size(); i++)
-	{
-		training.x[i-k] = x[i];
-		training.y[i-k] = y[i];
-	}
+		training.data[i-k] = data[i];
 
 	return training;
 }
@@ -102,30 +80,26 @@ Dataset Dataset::get_validation_set(size_t index, size_t k) const
 	Dataset validation(k);
 
 	for (size_t i = 0; i < k; i++)
-	{
-		validation.x[i] = x[index+i];
-		validation.y[i] = y[index+i];
-	}
+		validation.data[i] = data[index+i];
 
 	return validation;
 }
 
 size_t Dataset::size() const
 {
-	return x.size();
+	return data.size();
 }
 
 /* ----- Dataset Helper Functions ----- */
 
-std::vector<Vector> generate_range(double low, double high, double step)
+Dataset generate_range(double low, double high, double step)
 {
-	std::vector<Vector> data;
-
+	Dataset data;
 	for (double x = low; x < high; x += step)
 	{
 		Vector a(1);
 		a[0] = x;
-		data.push_back(a);
+		data.data.push_back(Dataset::point_type(a, Vector(1)));
 	}
 	
 	return data;
@@ -134,24 +108,31 @@ std::vector<Vector> generate_range(double low, double high, double step)
 
 Dataset randomize_dataset_order(const Dataset& data)
 {
-	Randomizer r(0, 1);
-	Dataset temp = data;
-	Dataset out;
+	std::random_device rd;
+	std::mt19937 g(rd());
 
-	while (temp.size() > 0)
-	{
-		int index = (int)( ((double) temp.size()) * r.next() );
-		out.x.push_back(temp.x[index]);
-		out.y.push_back(temp.y[index]);
-		temp.x.erase(temp.x.begin() + index);
-		temp.y.erase(temp.y.begin() + index);
-	}
-
+	Dataset out = data;
+	std::shuffle(out.begin(), out.end(), g);
 	return out;
 }
 
+Dataset::container_type::iterator Dataset::begin()
+{
+	return data.begin();
+}
 
+Dataset::container_type::iterator Dataset::end()
+{
+	return data.end();
+}
 
+Dataset::container_type::const_iterator Dataset::begin() const
+{
+	return data.begin();
+}
 
-
+Dataset::container_type::const_iterator Dataset::end() const
+{
+	return data.end();
+}
 

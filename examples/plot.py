@@ -15,10 +15,11 @@ def plot_data(filename):
         data = read_dataset(infile)
         pred = read_dataset(infile)
 
-    plt.plot(data[0], data[1], "o", label="outputs")
-    plt.plot(pred[0], pred[1], "-", label="results")
+    plt.plot(data[0], data[1], "o", label="data points")
+    plt.plot(pred[0], pred[1], "-", label="network prediction")
     plt.legend()
     plt.savefig("results.png")
+    #plt.show()
     plt.clf()
 
 def plot_xvalid(filename):

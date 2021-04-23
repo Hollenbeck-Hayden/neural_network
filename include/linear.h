@@ -5,6 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <numeric>
+#include "operations.h"
 
 /* ----- Forward Declarations ----- */
 
@@ -91,6 +92,21 @@ public:
 	friend Vector operator*(double t, const Vector& v);
 	friend Vector operator*(const Vector& v, const Matrix& m);
 
+	friend double dot(const Vector& a, const Vector& b);
+
+	/* ----- Component-wise Algorithms ----- */
+	template<class T, class AssignmentOp>
+	void component_wise(T t, AssignmentOp op)
+	{
+		operations::modify(data.begin(), data.end(), [t, op] (double& a) -> void { op(a,t); });
+	}
+
+	template<class AssignmentOp>
+	void component_wise(const Vector& v, AssignmentOp op)
+	{
+		operations::modify(data.begin(), data.end(), v.data.begin(), op);
+	}
+
 private:
 	std::vector<double> data;
 };
@@ -146,6 +162,20 @@ public:
 	friend Vector operator*(const Matrix& m, const Vector& v);
 	friend Matrix operator*(double t, const Matrix& m);
 	friend Vector operator*(const Vector& v, const Matrix& m);
+
+	/* ----- Component-wise Algorithms ----- */
+	template<class T, class AssignmentOp>
+	void component_wise(T t, AssignmentOp op)
+	{
+		operations::modify(data.begin(), data.end(), [t, op] (Vector& a) -> void { op(a,t); });
+	}
+
+	template<class AssignmentOp>
+	void component_wise(const Matrix& m, AssignmentOp op)
+	{
+		operations::modify(data.begin(), data.end(), m.data.begin(), op);
+	}
+
 
 private:
 	std::vector<Vector> data;
